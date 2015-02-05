@@ -27,7 +27,14 @@
 #define O_TILE_WIDTH 12
 #define BLOCK_SIZE (O_TILE_WIDTH + MASK_WIDTH - 1)
 
-__constant__ float mask[MASK_WIDTH];
+#define KERNEL 5
+
+//#define max(a, b) (a > b ? a : b)
+//#define min(a, b) (a > b ? b : a)
+#define clamp(x, start, end) (min(max(x, start), end))
+
+// mask will be put in the constant device memory
+__constant__ float mask[MASK_WIDTH*MASK_WIDTH];
 
 //typedef struct {
 //  int width, height, pitch, channels;
@@ -35,6 +42,8 @@ __constant__ float mask[MASK_WIDTH];
 //} * wbImage_t;
 
 //@@ INSERT CODE HERE
+
+#if KERNEL==1
 __global__ void convolution2D(float *input, 
                               int imageWidth, 
                               int imageHeight,
@@ -45,7 +54,7 @@ __global__ void convolution2D(float *input,
   const int by = blockIdx.y;
   const int tx = threadIdx.x; // width, i.e. columns
   const int ty = threadIdx.y; // height, i.e. rows
-//  const int tz = threadIdx.z; // responsible for channels
+  const int channel = threadIdx.z; // responsible for channels
   
   const int row_o = by*O_TILE_WIDTH + ty;
   const int col_o = bx*O_TILE_WIDTH + tx;
@@ -55,25 +64,198 @@ __global__ void convolution2D(float *input,
   
   __shared__ float shInput[BLOCK_SIZE][BLOCK_SIZE];
   
-  for (int channel = 0; channel < imageChannels; ++channel) {
-    if (row_i >= 0 && col_i >= 0 &&
-        row_i < imageHeight && col_i < imageWidth)
-      shInput[ty][tx] = input[(row_i*imageWidth + col_i)*imageChannels + channel];
-    else
-      shInput[ty][tx] = 0.;
+  if (row_i >= 0 && row_i < imageHeight &&
+      col_i >= 0 && col_i < imageWidth)
+    shInput[ty][tx] = input[(row_i*imageWidth + col_i)*imageChannels + channel];
+  else
+    shInput[ty][tx] = 0.;
+      
+  __syncthreads();
     
-    float out_val = 0.;
+  float out_val = 0.;
+  if (tx < O_TILE_WIDTH && ty < O_TILE_WIDTH) {
+    for (int i = 0; i < MASK_WIDTH; ++i)
+      for (int j = 0; j < MASK_WIDTH; ++j)
+        out_val += mask[i*MASK_WIDTH + j] * shInput[i+ty][j+tx];
+  }
+    
+  __syncthreads();
+ 
+  if (row_o < imageHeight && col_o < imageWidth)
+    output[(row_o*imageWidth + col_o)*imageChannels + channel] = clamp(out_val, 0., 1.);
+}
+#elif KERNEL==2
+__global__ void convolution2D(float *input, 
+                              int imageWidth, 
+                              int imageHeight,
+                              int imageChannels,
+                              int channel,
+                              float *output)
+{
+  const int bx = blockIdx.x;
+  const int by = blockIdx.y;
+  const int tx = threadIdx.x; // width, i.e. columns
+  const int ty = threadIdx.y; // height, i.e. rows
+  
+  const int row_o = by*O_TILE_WIDTH + ty;
+  const int col_o = bx*O_TILE_WIDTH + tx;
+  
+  const int row_i = row_o - MASK_RADIUS;
+  const int col_i = col_o - MASK_RADIUS;
+  
+  __shared__ float shInput[BLOCK_SIZE][BLOCK_SIZE];
+  
+  if (row_i >= 0 && row_i < imageHeight &&
+      col_i >= 0 && col_i < imageWidth)
+    shInput[ty][tx] = input[(row_i*imageWidth + col_i)*imageChannels + channel];
+  else
+    shInput[ty][tx] = 0.;
+      
+  __syncthreads();
+    
+  float out_val = 0.;
+  if (tx < O_TILE_WIDTH && ty < O_TILE_WIDTH) {
+    for (int i = 0; i < MASK_WIDTH; ++i)
+      for (int j = 0; j < MASK_WIDTH; ++j)
+        out_val += mask[i*MASK_WIDTH + j] * shInput[i+ty][j+tx];
+  }
+    
+  __syncthreads();
+  
+  if (row_o < imageHeight && col_o < imageWidth)
+    output[(row_o*imageWidth + col_o)*imageChannels + channel] = clamp(out_val, 0., 1.);
+}
+#elif KERNEL==3
+__global__ void convolution2D(float *input, 
+                              int imageWidth, 
+                              int imageHeight,
+                              int imageChannels,
+                              float *output)
+{
+  const int bx = blockIdx.x;
+  const int by = blockIdx.y;
+  const int tx = threadIdx.x; // width, i.e. columns
+  const int ty = threadIdx.y; // height, i.e. rows
+  
+  const int row_o = by*O_TILE_WIDTH + ty;
+  const int col_o = bx*O_TILE_WIDTH + tx;
+  
+  const int row_i = row_o - MASK_RADIUS;
+  const int col_i = col_o - MASK_RADIUS;
+  
+  __shared__ float shInput[BLOCK_SIZE][BLOCK_SIZE];
+  
+  if (row_i >= 0 && row_i < imageHeight &&
+      col_i >= 0 && col_i < imageWidth*imageChannels)
+    shInput[ty][tx] = input[row_i*imageWidth*imageChannels + col_i];
+  else
+    shInput[ty][tx] = 0.;
+      
+  __syncthreads();
+    
+  float out_val = 0.;
+  if (tx < O_TILE_WIDTH && ty < O_TILE_WIDTH) {
+    for (int i = 0; i < MASK_WIDTH; ++i)
+      for (int j = 0; j < MASK_WIDTH; ++j)
+        out_val += mask[i*MASK_WIDTH + j] * shInput[i+ty][j+tx];
+  }
+    
+  __syncthreads();
+  
+  if (row_o < imageHeight && col_o < imageWidth*imageChannels)
+    output[row_o*imageWidth*imageChannels + col_o] = clamp(out_val, 0., 1.);
+}
+#elif KERNEL==4
+__global__ void convolution2D(float *input, 
+                              int imageWidth, 
+                              int imageHeight,
+                              int imageChannels,
+                              float *output)
+{
+  const int bx = blockIdx.x;
+  const int by = blockIdx.y;
+  const int tx = threadIdx.x; // width, i.e. columns
+  const int ty = threadIdx.y; // height, i.e. rows
+  
+  const int row_o = by*O_TILE_WIDTH + ty;
+  const int col_o = bx*O_TILE_WIDTH + tx;
+  
+  const int row_i = row_o - MASK_RADIUS;
+  const int col_i = col_o - MASK_RADIUS;
+  
+  assert(imageChannels == 3);
+  __shared__ float shInput[BLOCK_SIZE][BLOCK_SIZE][3];
+  
+  for (int channel = 0; channel < imageChannels; ++channel) {
+    if (row_i >= 0 && row_i < imageHeight &&
+        col_i >= 0 && col_i < imageWidth)
+      shInput[ty][tx][channel] = input[(row_i*imageWidth + col_i)*imageChannels + channel];
+    else
+      shInput[ty][tx][channel] = 0.;
+  }
+      
+  __syncthreads();
+    
+  float outvals[3];
+  for (int channel = 0; channel < imageChannels; ++channel) {
+    outvals[channel] = 0.;
     if (tx < O_TILE_WIDTH && ty < O_TILE_WIDTH) {
       for (int i = 0; i < MASK_WIDTH; ++i)
         for (int j = 0; j < MASK_WIDTH; ++j)
-          out_val += mask[i*MASK_WIDTH + j] * shInput[i+ty][j+tx];
+          outvals[channel] += mask[i*MASK_WIDTH + j] * shInput[i+ty][j+tx][channel];
     }
-  
+  }
+    
+  __syncthreads();
+ 
+  for (int channel = 0; channel < imageChannels; ++channel) {
     if (row_o < imageHeight && col_o < imageWidth)
-      output[(row_o*imageWidth + col_o)*imageChannels + channel] = out_val;
-
-  } // channel
+      output[(row_o*imageWidth + col_o)*imageChannels + channel] = clamp(outvals[channel], 0., 1.);
+  }
 }
+#elif KERNEL==5
+__global__ void convolution2D(float *input, 
+                              int imageWidth, 
+                              int imageHeight,
+                              int imageChannels,
+                              int channel,
+                              float *output)
+{
+  const int bx = blockIdx.x;
+  const int by = blockIdx.y;
+  const int tx = threadIdx.x; // width, i.e. columns
+  const int ty = threadIdx.y; // height, i.e. rows
+  
+  const int row_o = by*O_TILE_WIDTH + ty;
+  const int col_o = bx*O_TILE_WIDTH + tx;
+  
+  const int row_i = row_o - MASK_RADIUS;
+  const int col_i = col_o - MASK_RADIUS;
+  
+  __shared__ float shInput[BLOCK_SIZE][BLOCK_SIZE];
+  
+  if (row_i >= 0 && row_i < imageHeight &&
+      col_i >= 0 && col_i < imageWidth)
+    shInput[ty][tx] = input[(row_i*imageWidth + col_i)*imageChannels + channel];
+  else
+    shInput[ty][tx] = 0.;
+      
+  __syncthreads();
+    
+  if (tx < O_TILE_WIDTH && ty < O_TILE_WIDTH &&
+      row_o < imageHeight && col_o < imageWidth) {
+      
+    float out_val = 0.;
+    for (int i = 0; i < MASK_WIDTH; ++i)
+      for (int j = 0; j < MASK_WIDTH; ++j)
+        out_val += mask[i*MASK_WIDTH + j] * shInput[i+ty][j+tx];
+        
+    output[(row_o*imageWidth + col_o)*imageChannels + channel] = clamp(out_val, 0., 1.);
+  }
+}
+#else
+  #error "Kernel unknown"
+#endif // KERNEL
 
 
 
@@ -154,6 +336,34 @@ int main(int argc, char* argv[]) {
     wbTime_start(Compute, "Doing the computation on the GPU");
     
     //@@ INSERT CODE HERE
+#if KERNEL==1
+    dim3 gridSize((imageWidth-1)/O_TILE_WIDTH + 1, (imageHeight-1)/O_TILE_WIDTH + 1, 1);
+    dim3 blockSize(BLOCK_SIZE, BLOCK_SIZE, imageChannels);
+    convolution2D<<<gridSize, blockSize>>>(deviceInputImageData, 
+                                           imageWidth, 
+                                           imageHeight,
+                                           imageChannels,
+                                           deviceOutputImageData);
+#elif KERNEL==2
+    dim3 gridSize((imageWidth-1)/O_TILE_WIDTH + 1, (imageHeight-1)/O_TILE_WIDTH + 1, 1);
+    dim3 blockSize(BLOCK_SIZE, BLOCK_SIZE, 1);
+    for (int channel = 0; channel < imageChannels; ++channel)
+      convolution2D<<<gridSize, blockSize>>>(deviceInputImageData,
+                                             imageWidth,
+                                             imageHeight,
+                                             imageChannels,
+                                             channel,
+                                             deviceOutputImageData);
+#elif KERNEL==3
+    dim3 gridSize((imageWidth*imageChannels-1)/O_TILE_WIDTH + 1,
+                  (imageHeight-1)/O_TILE_WIDTH + 1, 1);
+    dim3 blockSize(BLOCK_SIZE, BLOCK_SIZE, 1);
+    convolution2D<<<gridSize, blockSize>>>(deviceInputImageData, 
+                                           imageWidth, 
+                                           imageHeight,
+                                           imageChannels,
+                                           deviceOutputImageData);
+#elif KERNEL==4
     dim3 gridSize((imageWidth-1)/O_TILE_WIDTH + 1, (imageHeight-1)/O_TILE_WIDTH + 1, 1);
     dim3 blockSize(BLOCK_SIZE, BLOCK_SIZE, 1);
     convolution2D<<<gridSize, blockSize>>>(deviceInputImageData, 
@@ -161,6 +371,19 @@ int main(int argc, char* argv[]) {
                                            imageHeight,
                                            imageChannels,
                                            deviceOutputImageData);
+#elif KERNEL==5
+    dim3 gridSize((imageWidth-1)/O_TILE_WIDTH + 1, (imageHeight-1)/O_TILE_WIDTH + 1, 1);
+    dim3 blockSize(BLOCK_SIZE, BLOCK_SIZE, 1);
+    for (int channel = 0; channel < imageChannels; ++channel)
+      convolution2D<<<gridSize, blockSize>>>(deviceInputImageData,
+                                             imageWidth,
+                                             imageHeight,
+                                             imageChannels,
+                                             channel,
+                                             deviceOutputImageData);
+#else
+  #error "Kernel unknown"
+#endif // KERNEL
     
     wbTime_stop(Compute, "Doing the computation on the GPU");
 
