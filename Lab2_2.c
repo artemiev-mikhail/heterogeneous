@@ -33,19 +33,47 @@ __global__ void matrixMultiply(float *A, float *B, float *C,
   assert(numAColumns == numBRows);
   assert(numARows == numCRows);
   assert(numBColumns == numCColumns);
+  
+  __shared__ float shA[TILE_WIDTH][TILE_WIDTH];
+  __shared__ float shB[TILE_WIDTH][TILE_WIDTH];
+  
+  const int bx = blockIdx.x;
+  const int by = blockIdx.y;
+  const int tx = threadIdx.x;
+  const int ty = threadIdx.y;
 
-  const int row = blockIdx.x*blockDim.x + threadIdx.x;
-  const int col = blockIdx.y*blockDim.y + threadIdx.y;
+  const int row = bx*TILE_WIDTH + tx;
+  const int col = by*TILE_WIDTH + ty;
+  
+  const int numPhases = (numAColumns-1)/TILE_WIDTH + 1;
 
-  if (row < numCRows && col < numCColumns) {
-	  
-    float c_val = 0;
-	  
-    for (int k = 0; k < numAColumns; ++k)
-      c_val += A[row*numAColumns + k] * B[k*numBColumns + col];
-	  
-    C[row*numCColumns + col] = c_val;
+  float c_val = 0;
+    
+  for (int phase = 0; phase < numPhases; ++phase) {
+  
+    // loading the parts of matrices to the shared arrays
+    if (phase*TILE_WIDTH + ty < numAColumns && 
+        row < numARows)
+      shA[tx][ty] = A[row*numAColumns + phase*TILE_WIDTH + ty];
+    else
+      shA[tx][ty] = 0.;
+    
+    if (phase*TILE_WIDTH + tx < numBRows &&
+        col < numBColumns)
+      shB[tx][ty] = B[phase*TILE_WIDTH*numBColumns + tx*numBColumns + col];
+    else
+      shB[tx][ty] = 0.;
+    
+    __syncthreads();
+    
+    for (int k = 0; k < TILE_WIDTH; ++k)
+      c_val += shA[tx][k] * shB[k][ty];
+      
+    __syncthreads();
   }
+  
+  if (row < numCRows && col < numCColumns)
+    C[row*numCColumns + col] = c_val;
 }
 
 int main(int argc, char **argv) {
