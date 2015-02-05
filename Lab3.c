@@ -9,6 +9,7 @@
             return -1;                                                        \
         }                                                                     \
     } while(0)
+
     
 #define checkErr(err)                                      \
   do {                                                     \
@@ -19,12 +20,14 @@
     }                                                      \
   } while (0);
 
+
 #define MASK_WIDTH  5
 #define MASK_RADIUS MASK_WIDTH/2
 
 #define O_TILE_WIDTH 12
 #define BLOCK_SIZE (O_TILE_WIDTH + MASK_WIDTH - 1)
 
+__constant__ float mask[MASK_WIDTH];
 
 //typedef struct {
 //  int width, height, pitch, channels;
@@ -36,15 +39,13 @@ __global__ void convolution2D(float *input,
                               int imageWidth, 
                               int imageHeight,
                               int imageChannels,
-                              const float __restrict__ *mask,
-                              int maskRows,
-                              int maskColumns,
                               float *output)
 {
   const int bx = blockIdx.x;
   const int by = blockIdx.y;
-  const int tx = threadIdx.x;
-  const int ty = threadIdx.y;
+  const int tx = threadIdx.x; // width, i.e. columns
+  const int ty = threadIdx.y; // height, i.e. rows
+//  const int tz = threadIdx.z; // responsible for channels
   
   const int row_o = by*O_TILE_WIDTH + ty;
   const int col_o = bx*O_TILE_WIDTH + tx;
@@ -54,21 +55,24 @@ __global__ void convolution2D(float *input,
   
   __shared__ float shInput[BLOCK_SIZE][BLOCK_SIZE];
   
-  if (row_i >= 0 && col_i >= 0 &&
-      row_i < imageHeight && col_i < imageWidth)
-    shInput[ty][tx] = input[row_i*imageWidth * col_i];
-  else
-    shInput[ty][tx] = 0.;
+  for (int channel = 0; channel < imageChannels; ++channel) {
+    if (row_i >= 0 && col_i >= 0 &&
+        row_i < imageHeight && col_i < imageWidth)
+      shInput[ty][tx] = input[(row_i*imageWidth + col_i)*imageChannels + channel];
+    else
+      shInput[ty][tx] = 0.;
     
-  float out_val = 0.;
-  if (tx < O_TILE_WIDTH && ty < O_TILE_WIDTH) {
-    for (int i = 0; i < maskRows; ++i)
-      for (int j = 0; j < maskColumns; ++j)
-        out_val += mask[i*maskColumns + j] * shInput[i+ty][j+tx];
-  }
+    float out_val = 0.;
+    if (tx < O_TILE_WIDTH && ty < O_TILE_WIDTH) {
+      for (int i = 0; i < MASK_WIDTH; ++i)
+        for (int j = 0; j < MASK_WIDTH; ++j)
+          out_val += mask[i*MASK_WIDTH + j] * shInput[i+ty][j+tx];
+    }
   
-  if (row_o < imageHeight && col_o < imageWidth)
-    output[row_o*imageWidth + col_o] = out_val;
+    if (row_o < imageHeight && col_o < imageWidth)
+      output[(row_o*imageWidth + col_o)*imageChannels + channel] = out_val;
+
+  } // channel
 }
 
 
@@ -90,7 +94,7 @@ int main(int argc, char* argv[]) {
     float * hostMaskData;
     float * deviceInputImageData;
     float * deviceOutputImageData;
-    float * deviceMaskData;
+//    float * deviceMaskData;
 
     args = wbArg_read(argc, argv); /* parse the input arguments */
 
@@ -129,7 +133,7 @@ int main(int argc, char* argv[]) {
     wbTime_start(GPU, "Doing GPU memory allocation");
     cudaMalloc((void **) &deviceInputImageData, imageSizeBytes);
     cudaMalloc((void **) &deviceOutputImageData, imageSizeBytes);
-    cudaMalloc((void **) &deviceMaskData, maskSizeBytes);
+//    cudaMalloc((void **) &deviceMaskData, maskSizeBytes);
     wbTime_stop(GPU, "Doing GPU memory allocation");
 
 
@@ -138,10 +142,12 @@ int main(int argc, char* argv[]) {
                hostInputImageData,
                imageSizeBytes,
                cudaMemcpyHostToDevice);
-    cudaMemcpy(deviceMaskData,
-               hostMaskData,
-               maskSizeBytes,
-               cudaMemcpyHostToDevice);
+//    cudaMemcpy(deviceMaskData,
+//               hostMaskData,
+//               maskSizeBytes,
+//               cudaMemcpyHostToDevice);
+    // copy mask to the constant device memory
+    cudaMemcpyToSymbol(mask, hostMaskData, maskSizeBytes);
     wbTime_stop(Copy, "Copying data to the GPU");
 
 
@@ -154,9 +160,6 @@ int main(int argc, char* argv[]) {
                                            imageWidth, 
                                            imageHeight,
                                            imageChannels,
-                                           deviceMaskData,
-                                           maskRows,
-                                           maskColumns,
                                            deviceOutputImageData);
     
     wbTime_stop(Compute, "Doing the computation on the GPU");
@@ -171,11 +174,34 @@ int main(int argc, char* argv[]) {
 
     wbTime_stop(GPU, "Doing GPU Computation (memory + compute)");
 
+
+    // sequential version
+//    for (int i = 0; i < imageHeight; ++i) {
+//      for (int j = 0; j < imageWidth; ++j) {
+//        for (int k = 0; k < imageChannels; ++k) {
+//          float outval = 0.;
+//          for (int ii = -MASK_RADIUS; ii <= MASK_RADIUS; ++ii) {
+//            for (int jj = -MASK_RADIUS; jj <= MASK_RADIUS; ++jj) {
+//              const int r = i + ii;
+//              const int c = j + jj;
+//              if (r >= 0 && r < imageHeight &&
+//                  c >= 0 && c < imageWidth)
+//                outval += hostMaskData[(ii+MASK_RADIUS)*MASK_WIDTH + (jj+MASK_RADIUS)] *
+//                          hostInputImageData[(r*imageWidth + c)*imageChannels + k];
+//            } // jj
+//          } // ii
+//
+//          hostOutputImageData[(i*imageWidth + j)*imageChannels + k] = outval;
+//
+//        } // k
+//      } // j
+//    } // i
+
     wbSolution(args, outputImage);
 
     cudaFree(deviceInputImageData);
     cudaFree(deviceOutputImageData);
-    cudaFree(deviceMaskData);
+//    cudaFree(deviceMaskData);
 
     free(hostMaskData);
     wbImage_delete(outputImage);
