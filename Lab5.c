@@ -111,8 +111,8 @@ __global__ void add_sums(float *output, int numOutputElements, float *sums, int 
   const int start = 2 * BLOCK_SIZE * bx;
 
   float sum;
-  if (bx < numSumsElements)
-    sum = sums[bx];
+  if (bx > 0 && bx < numSumsElements)
+    sum = sums[bx-1];
   else
     sum = 0.;
 
@@ -172,23 +172,24 @@ int main(int argc, char ** argv)
     } 
     else // if there are more than 1 sections
     {
-//      float *hostSums = (float*) malloc(gridSize.x * sizeof(float));
       float *deviceSumsInput;
       float *deviceSumsOutput;
       wbCheck(cudaMalloc((void**)&deviceSumsInput,  gridSize.x*sizeof(float)));
       wbCheck(cudaMalloc((void**)&deviceSumsOutput, gridSize.x*sizeof(float)));
       wbCheck(cudaMemset(deviceSumsOutput, 0, gridSize.x*sizeof(float)));
-//      wbCheck(cudaMemcpy(deviceSumsInput, hostSums, gridSize.x * sizeof(float), cudaMemcpyHostToDevice));
 
+      // scan with saving the sums
       scan_with_sums<<<gridSize, blockSize>>>(deviceInput, deviceOutput, numElements, deviceSumsInput);
       cudaDeviceSynchronize();
 
+      // scan for the array of sums
       dim3 gridSizeAux((gridSize.x-1)/(2*BLOCK_SIZE) + 1, 1, 1);
       wbLog(TRACE, "grid aux: ", gridSizeAux.x, " x ", gridSizeAux.y, " x ", gridSizeAux.z);
 
       scan_plain<<<gridSizeAux, blockSize>>>(deviceSumsInput, deviceSumsOutput, gridSize.x);
       cudaDeviceSynchronize();
        
+      // add sums to the output
       add_sums<<<gridSize, blockSize>>>(deviceOutput, numElements, deviceSumsOutput, gridSize.x);
       cudaDeviceSynchronize();
 
