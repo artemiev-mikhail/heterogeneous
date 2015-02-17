@@ -1,6 +1,6 @@
 __global__ void histo_kernel(char *input, int len, int *histogram)
 {
-  const int index = blockIdx.x*blockDim.x + threadIdx.x;
+  int index = blockIdx.x*blockDim.x + threadIdx.x;
   
   const int stride = blockDim.x * gridDim.x;
   
