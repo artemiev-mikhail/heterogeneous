@@ -23,6 +23,8 @@
 
 #define BLOCK_SIZE_REGULAR 512
 
+//#define SHOW_STEPS
+
 
 //============================================================================
 // Cast an array of float numbers to an array of unsigned char ones
@@ -60,10 +62,12 @@ __global__ void convert_to_gray(const unsigned char *rgbImage,
     const unsigned char r = rgbImage[idx*imageChannels + 0]; // red
     const unsigned char g = rgbImage[idx*imageChannels + 1]; // green
     const unsigned char b = rgbImage[idx*imageChannels + 2]; // blue
-    grayImage[idx] = 100; //0.21*r + 0.71*g + 0.07*b;
+    const float rf = 0.21*r;
+    const float gf = 0.71*g;
+    const float bf = 0.07*b;
+//    grayImage[idx] = (unsigned char)(0.21*r + 0.71*g + 0.07*b);
+    grayImage[idx] = (unsigned char)(rf + gf + bf);
   }
-  
-  grayImage[row*imageWidth + col] = 100;
 }
 
 //============================================================================
@@ -199,12 +203,11 @@ __global__ void reduction_min(const float *input, float *min_value, int lengthIn
 __global__ void perform_correct(const unsigned char *inputImage,
                                 float *outputImage,
                                 int inputLength,
-                                float *cdf,
-                                float cdfmin)
+                                float *cdf)
 {
   const int index = blockIdx.x*blockDim.x + threadIdx.x;
   if (index < inputLength)
-    outputImage[index] = correct_color(cdf[inputImage[index]], cdfmin) / 255.;
+    outputImage[index] = correct_color(cdf[inputImage[index]], cdf[0]) / 255.;
 }
 
 
@@ -270,41 +273,50 @@ int main(int argc, char ** argv)
   
   cast_to_char<<<gridSize1D, blockSize1D>>>(deviceInputImageData, deviceInputImageDataUChar, imageNElements);
   wbTime_stop(Generic, "Cast the image to unsigned char array");
-  
-  
-  
-  unsigned char *hostInputImageDataUChar = (unsigned char*)malloc(imageHeight*imageWidth*imageChannels*sizeof(unsigned char));
-  err = cudaMemcpy(hostInputImageDataUChar, deviceInputImageDataUChar, imageHeight*imageWidth*imageChannels*sizeof(unsigned char), cudaMemcpyDeviceToHost); checkErr(err);
-  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
-    wbLog(TRACE, "InputImageDataUChar[", i, "] = ", (int)hostInputImageDataUChar[i]);
-  free(hostInputImageDataUChar);
-  
-  
-  
+
+
   wbTime_start(Generic, "Convert from RGB to Gray image");
   const int imageGrayNElements = imageHeight * imageWidth; // there are no RGB channels
   unsigned char *deviceGrayImageData = NULL;
-  err = cudaMalloc((void**)&deviceGrayImageData, imageGrayNElements * sizeof(unsigned char)); checkErr(err);
+  err = cudaMalloc((void**)&deviceGrayImageData, imageGrayNElements * sizeof(char)); checkErr(err);
   
   dim3 gridSize2D((imageWidth-1)/BLOCK_SIZE_REGULAR+1, (imageHeight-1)/BLOCK_SIZE_REGULAR+1, 1);
   dim3 blockSize2D(BLOCK_SIZE_REGULAR, BLOCK_SIZE_REGULAR, 1);
   wbLog(TRACE, "gridSize2D = ", gridSize2D.x, " x ", gridSize2D.y, " x ", gridSize2D.z);
   wbLog(TRACE, "blockSize2D = ", blockSize2D.x, " x ", blockSize2D.y, " x ", blockSize2D.z);
   
+  assert(deviceGrayImageData != NULL);
   convert_to_gray<<<gridSize2D, blockSize2D>>>(deviceInputImageDataUChar, 
                                                deviceGrayImageData, 
                                                imageHeight,
                                                imageWidth);
+  err = cudaDeviceSynchronize(); checkErr(err);
   wbTime_stop(Generic, "Convert from RGB to Gray image");
   
   
-  
-  unsigned char *hostGrayImageData = (unsigned char*)malloc(imageGrayNElements*sizeof(unsigned char));
-  err = cudaMemcpy(hostGrayImageData, deviceGrayImageData, imageGrayNElements*sizeof(unsigned char), cudaMemcpyDeviceToHost); checkErr(err);
-  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
-    wbLog(TRACE, "grayImageData[", i, "] = ", (char)hostGrayImageData[i]);
+  unsigned char *hostGrayImageData = (unsigned char*)malloc(imageGrayNElements*sizeof(char));
+  err = cudaMemcpy(hostGrayImageData, deviceGrayImageData, imageGrayNElements*sizeof(char), cudaMemcpyDeviceToHost); checkErr(err);
+  for (int i = 0; i < 10; ++i)
+    wbLog(TRACE, "grayImageData[", i, "] = ", (int)hostGrayImageData[i]);
+	
+	unsigned char *hostInputImageDataUChar = (unsigned char*)malloc(imageSizeBytes);
+  err = cudaMemcpy(hostInputImageDataUChar, deviceInputImageDataUChar, imageSizeBytes, cudaMemcpyDeviceToHost); checkErr(err);
+  for (int i = 0; i < imageHeight; ++i)
+  {
+    for (int j = 0; j < imageWidth; ++j)
+    {
+      const int el = i*imageWidth + j;
+      unsigned char r = hostInputImageDataUChar[el*3 + 0];
+      unsigned char g = hostInputImageDataUChar[el*3 + 1];
+      unsigned char b = hostInputImageDataUChar[el*3 + 2];
+      hostGrayImageData[el] = (unsigned char)(0.21*r + 0.71*g + 0.07*b);
+    }
+  }
+  for (int i = 0; i < 10; ++i)
+    wbLog(TRACE, "grayImageData[", i, "] = ", (int)hostGrayImageData[i]);
+  err = cudaMemcpy(deviceGrayImageData, hostGrayImageData, imageGrayNElements*sizeof(unsigned char), cudaMemcpyHostToDevice); checkErr(err);
   free(hostGrayImageData);
-  
+  free(hostInputImageDataUChar);
   
 
   wbTime_start(Generic, "Compute the histogram");
@@ -315,11 +327,21 @@ int main(int argc, char ** argv)
   dim3 gridSize1D_Gray((imageGrayNElements-1)/BLOCK_SIZE_REGULAR+1, 1, 1);
   wbLog(TRACE, "gridSize1D_Gray = ", gridSize1D_Gray.x, " x ", gridSize1D_Gray.y, " x ", gridSize1D_Gray.z);
   compute_histogram<<<gridSize1D_Gray, blockSize1D>>>(deviceGrayImageData, imageGrayNElements, deviceHistogram);
+  err = cudaDeviceSynchronize(); checkErr(err);
   wbTime_stop(Generic, "Compute the histogram");
+
+#if defined(SHOW_STEPS)
+  int *hostHistogram = (int*)malloc(HISTOGRAM_LENGTH*sizeof(int));
+  err = cudaMemcpy(hostHistogram, deviceHistogram, HISTOGRAM_LENGTH*sizeof(int), cudaMemcpyDeviceToHost); checkErr(err);
+  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
+    wbLog(TRACE, "histogram[", i, "] = ", hostHistogram[i]);
+  free(hostHistogram);
+#endif // SHOW_STEPS
+
   
   wbTime_start(Generic, "Compute CDF");
-  float *device_cdf = NULL;
-  err = cudaMalloc((void**)&device_cdf, HISTOGRAM_LENGTH * sizeof(float)); checkErr(err);
+  float *deviceCDF = NULL;
+  err = cudaMalloc((void**)&deviceCDF, HISTOGRAM_LENGTH * sizeof(float)); checkErr(err);
   
   dim3 gridSize1D_Histo((HISTOGRAM_LENGTH-1)/(BLOCK_SIZE_HISTO<<1)+1, 1, 1);
   dim3 blockSize1D_Histo(BLOCK_SIZE_HISTO, 1, 1);
@@ -327,11 +349,21 @@ int main(int argc, char ** argv)
   wbLog(TRACE, "blockSize1D_Histo = ", blockSize1D_Histo.x, " x ", blockSize1D_Histo.y, " x ", blockSize1D_Histo.z);
   
   compute_cdf<<<gridSize1D_Histo, blockSize1D_Histo>>>(deviceHistogram, 
-                                                       device_cdf, 
+                                                       deviceCDF, 
                                                        HISTOGRAM_LENGTH,
                                                        imageHeight,
                                                        imageWidth);
+  err = cudaDeviceSynchronize(); checkErr(err);
   wbTime_stop(Generic, "Compute CDF");
+
+#if defined(SHOW_STEPS)  
+  float *hostCDF = (float*)malloc(HISTOGRAM_LENGTH*sizeof(float));
+  err = cudaMemcpy(hostCDF, deviceCDF, HISTOGRAM_LENGTH*sizeof(float), cudaMemcpyDeviceToHost); checkErr(err);
+  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
+    wbLog(TRACE, "cdf[", i, "] = ", hostCDF[i]);
+  free(hostCDF);
+#endif // SHOW_STEPS
+  
   
 /*  
   wbTime_start(Generic, "Find min(CDF)");
@@ -343,35 +375,19 @@ int main(int argc, char ** argv)
   wbLog(TRACE, "cdfmin = ", host_cdfmin);
   wbTime_stop(Generic, "Find min(CDF)");
 */
-/*
-  perform_correct<<<gridSize1D_Histo, blockSize1D_Histo>>>(deviceInputImageDataUChar,
-                                                           deviceOutputImageData,
-                                                           imageNElements,
-                                                           device_cdf,
-                                                           device_cdf[0]);
-*/
-/*  
-  int *hostHistogram = (int*)malloc(HISTOGRAM_LENGTH*sizeof(int));
-  err = cudaMemcpy(hostHistogram, deviceHistogram, HISTOGRAM_LENGTH*sizeof(int), cudaMemcpyDeviceToHost); checkErr(err);
-  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
-    wbLog(TRACE, "histogram[", i, "] = ", hostHistogram[i]);
-  free(hostHistogram);
-  
-  float *hostCDF = (float*)malloc(HISTOGRAM_LENGTH*sizeof(float));
-  err = cudaMemcpy(hostCDF, device_cdf, HISTOGRAM_LENGTH*sizeof(float), cudaMemcpyDeviceToHost); checkErr(err);
-  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
-    wbLog(TRACE, "cdf[", i, "] = ", hostCDF[i]);
-  free(hostCDF);
-  
-  unsigned char *hostGrayImageData = (unsigned char*)malloc(imageGrayNElements*sizeof(unsigned char));
-  err = cudaMemcpy(hostGrayImageData, deviceGrayImageData, imageGrayNElements*sizeof(unsigned char), cudaMemcpyDeviceToHost); checkErr(err);
-  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
-    wbLog(TRACE, "grayImageData[", i, "] = ", (int)hostGrayImageData[i]);
-  free(hostGrayImageData);
-*/
 
-                                               
-  err = cudaFree(device_cdf);                checkErr(err);
+
+  wbTime_start(Generic, "Correct the image");
+  perform_correct<<<gridSize1D, blockSize1D>>>(deviceInputImageDataUChar,
+                                               deviceOutputImageData,
+                                               imageNElements,
+                                               deviceCDF);
+  err = cudaDeviceSynchronize(); checkErr(err);
+  wbTime_stop(Generic, "Correct the image");
+
+
+  // free the device memory                                             
+  err = cudaFree(deviceCDF);                 checkErr(err);
   err = cudaFree(deviceHistogram);           checkErr(err);
   err = cudaFree(deviceGrayImageData);       checkErr(err);
   err = cudaFree(deviceInputImageDataUChar); checkErr(err);

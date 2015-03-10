@@ -96,14 +96,14 @@ int main(int argc, char ** argv)
   
   wbLog(TRACE, "cdfmin = ", cdfmin, " for ", imin, " element");
   
-//  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
-//    wbLog(TRACE, "histogram[", i, "] = ", histogram[i]);
+  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
+    wbLog(TRACE, "histogram[", i, "] = ", histogram[i]);
     
-//  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
-//    wbLog(TRACE, "cdf[", i, "] = ", cdf[i]);
+  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
+    wbLog(TRACE, "cdf[", i, "] = ", cdf[i]);
     
-//  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
-//    wbLog(TRACE, "grayImage[", i, "] = ", (int)grayImage[i]);
+  for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
+    wbLog(TRACE, "grayImage[", i, "] = ", (int)grayImage[i]);
   
   for (int i = 0; i < HISTOGRAM_LENGTH; ++i)
     wbLog(TRACE, "ucharImage[", i, "] = ", (int)ucharImage[i]);
