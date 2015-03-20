@@ -65,6 +65,8 @@ int main(int argc, char **argv)
   hostInput2 = (float *) wbImport(wbArg_getInputFile(args, 1), &inputLength);
   hostOutput = (float *) malloc(inputLength * sizeof(float));
   wbTime_stop(Generic, "Importing data and creating memory on host");
+  
+  wbLog(TRACE, "inputLength = ", inputLength);
 
   //---------------------------------------------------------------------------
   // Allocate memory on device for each CUDA stream
@@ -101,7 +103,7 @@ int main(int argc, char **argv)
       // because segmentSize = BLOCK_SIZE there is only one block for the kernel
       vecAdd<<<1, BLOCK_SIZE, 0, stream[s]>>>(deviceInput1[s],
                                               deviceInput2[s],
-                                              deviceOutput,
+                                              deviceOutput[s],
                                               inputLength);
     }
                                                                      
