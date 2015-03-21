@@ -16,6 +16,14 @@
 
 //=============================================================================
 //
+// min and max functions
+//
+//=============================================================================
+#define min(a, b) (a < b ? a : b)
+#define max(a, b) (a > b ? a : b)
+
+//=============================================================================
+//
 // The number of CUDA streams
 //
 //=============================================================================
@@ -69,9 +77,17 @@ int main(int argc, char **argv)
   wbLog(TRACE, "inputLength = ", inputLength);
 
   //---------------------------------------------------------------------------
+  // Create CUDA streams
+  //---------------------------------------------------------------------------
+  for (int s = 0; s < N_STREAMS; ++s)
+  {
+    err = cudaStreamCreate(&stream[s]); check(err);
+  }
+
+  //---------------------------------------------------------------------------
   // Allocate memory on device for each CUDA stream
   //---------------------------------------------------------------------------
-  const int segmentSize = BLOCK_SIZE;
+  const int segmentSize = 128;
   for (int s = 0; s < N_STREAMS; ++s)
   {
     err = cudaMalloc((void**)&deviceInput1[s], segmentSize*sizeof(float)); check(err);
@@ -84,34 +100,40 @@ int main(int argc, char **argv)
   //---------------------------------------------------------------------------
   for (int i = 0; i < inputLength; i += segmentSize*N_STREAMS)
   {
+    wbLog(TRACE, "i = ", i);
+
     for (int s = 0; s < N_STREAMS; ++s)
     {
+      const int copySize = max(min(segmentSize, inputLength - i - s*segmentSize), 0);
+      wbLog(TRACE, "stream = ", s, " copySize = ", copySize);
       err = cudaMemcpyAsync(deviceInput1[s],
                             hostInput1 + i + s*segmentSize,
-                            segmentSize*sizeof(float),
+                            copySize*sizeof(float),
                             cudaMemcpyHostToDevice,
                             stream[s]); check(err);
       err = cudaMemcpyAsync(deviceInput2[s],
                             hostInput2 + i + s*segmentSize,
-                            segmentSize*sizeof(float),
+                            copySize*sizeof(float),
                             cudaMemcpyHostToDevice,
                             stream[s]); check(err);
     }
     
     for (int s = 0; s < N_STREAMS; ++s)
     {
-      // because segmentSize = BLOCK_SIZE there is only one block for the kernel
-      vecAdd<<<1, BLOCK_SIZE, 0, stream[s]>>>(deviceInput1[s],
+      const int copySize = max(min(segmentSize, inputLength - i - s*segmentSize), 0);
+      int d = (segmentSize - 1) / BLOCK_SIZE + 1;
+      vecAdd<<<d, BLOCK_SIZE, 0, stream[s]>>>(deviceInput1[s],
                                               deviceInput2[s],
                                               deviceOutput[s],
-                                              inputLength);
+                                              copySize);
     }
                                                                      
     for (int s = 0; s < N_STREAMS; ++s)
     {
+      const int copySize = max(min(segmentSize, inputLength - i - s*segmentSize), 0);
       err = cudaMemcpyAsync(hostOutput + i + s*segmentSize,
                             deviceOutput[s],
-                            segmentSize*sizeof(float),
+                            copySize*sizeof(float),
                             cudaMemcpyDeviceToHost,
                             stream[s]); check(err);
     }
